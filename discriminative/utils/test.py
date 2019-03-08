@@ -1,10 +1,9 @@
 import numpy as np
 import matplotlib
 matplotlib.use('agg')
-import matplotlib.pyplot as plt
-from multihead_models import MFVI_NN
 import torch
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
 
 def merge_coresets(x_coresets, y_coresets):
     merged_x, merged_y = x_coresets[0], y_coresets[0]
@@ -13,13 +12,32 @@ def merge_coresets(x_coresets, y_coresets):
         merged_y = np.hstack((merged_y, y_coresets[i]))
     return merged_x, merged_y
 
-def get_scores(model, x_testsets, y_testsets, x_coresets, y_coresets, hidden_size, no_epochs, single_head, batch_size=None, just_vanilla = False):
+
+def get_coreset(x_coresets, y_coresets, single_head, coreset_size = 5000, gans = None, task_id=0):
+    if gans is not None:
+        if single_head:
+            merged_x, merged_y = gans[0].generate_samples(coreset_size, task_id)
+            for i in range(1, len(gans)):
+                new_x, new_y = gans[i].generate_samples(coreset_size, task_id)
+                merged_x = np.vstack((merged_x,new_x))
+                merged_y = np.hstack((merged_y,new_y))
+            return merged_x, merged_y
+        else:
+            return gans.generate_samples(coreset_size, task_id)[:coreset_size]
+    else:
+        if single_head:
+            return merge_coresets(x_coresets, y_coresets)
+        else:
+            return x_coresets, y_coresets
+
+
+def get_scores(model, x_testsets, y_testsets, no_epochs, single_head,  x_coresets, y_coresets, batch_size=None, just_vanilla = False, gans = None):
 
     acc = []
     if single_head:
-        if len(x_coresets) > 0:
-            #model.load_weights()
-            x_train, y_train = merge_coresets(x_coresets, y_coresets)
+        if len(x_coresets) > 0 or gans is not None:
+            x_train, y_train = get_coreset(x_coresets, y_coresets, single_head, coreset_size = 6000, gans = gans, task_id=0)
+
             bsize = x_train.shape[0] if (batch_size is None) else batch_size
             x_train = torch.Tensor(x_train)
             y_train = torch.Tensor(y_train)
@@ -27,9 +45,14 @@ def get_scores(model, x_testsets, y_testsets, x_coresets, y_coresets, hidden_siz
 
     for i in range(len(x_testsets)):
         if not single_head:
-            if len(x_coresets) > 0:
+            if len(x_coresets)>0 or gans is not None:
                 model.load_weights()
-                x_train, y_train = x_coresets[i], y_coresets[i]
+                gan_i = None
+                if gans is not None:
+                    gan_i = gans[i]
+                    x_train, y_train = get_coreset(None, None, single_head, coreset_size = 6000, gans= gan_i, task_id=i)
+                else:
+                    x_train, y_train = get_coreset(x_coresets[i], y_coresets[i], single_head, coreset_size = 6000, gans= None, task_id=i)
                 bsize = x_train.shape[0] if (batch_size is None) else batch_size
                 x_train = torch.Tensor(x_train)
                 y_train = torch.Tensor(y_train)
@@ -70,18 +93,3 @@ def concatenate_results(score, all_score):
         new_arr[:,:-1] = all_score
         all_score = np.vstack((new_arr, score))
     return all_score
-
-def plot3(filename, vcl, rand_vcl, kcen_vcl):
-
-    fig = plt.figure(figsize=(7,3))
-    ax = plt.gca()
-    plt.plot(np.arange(len(vcl))+1, vcl, label='VCL', marker='o')
-    plt.plot(np.arange(len(rand_vcl))+1, rand_vcl, label='VCL + Random Coreset', marker='o')
-    plt.plot(np.arange(len(kcen_vcl))+1, kcen_vcl, label='VCL + K-center Coreset', marker='o')
-    ax.set_xticks(range(1, len(vcl)+1))
-    ax.set_ylabel('Average accuracy')
-    ax.set_xlabel('\# tasks')
-    ax.legend()
-    plt.show()
-    #fig.savefig(filename)
-    #plt.close()
